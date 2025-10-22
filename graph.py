@@ -1,57 +1,85 @@
+# graph.py
 import os
 from datetime import datetime
 from typing import Annotated, Literal
 
-from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
-from tools import fetch_user_flight_information, flight_tools, primary_assistant_tools
+from tools import *
 
 
 def update_dialog_stack(left: list[str], right: str | None) -> list[str]:
-    """Update the dialog stack based on the right value."""
     if right is None:
         return left
     if right == "pop":
-        return left[:-1]
+        return left[:-1] if left else []
     return left + [right]
 
 
 class State(TypedDict):
-    """State definition for the conversation graph."""
-
     messages: Annotated[list[AnyMessage], lambda x, y: x + y]
     user_info: str
     dialog_state: Annotated[
-        list[Literal["primary_assistant", "flight_assistant"]], update_dialog_stack
+        list[
+            Literal[
+                "primary_assistant",
+                "flight_assistant",
+                "hotel_assistant",
+                "car_rental_assistant",
+                "excursion_assistant",
+            ]
+        ],
+        update_dialog_stack,
     ]
 
 
 class CompleteOrEscalate(BaseModel):
-    """Mark the current task as completed or escalate control to the primary assistant."""
+    """Marca la tarea actual como completada o escala el control al asistente principal."""
 
     reason: str
 
 
 class ToFlightBookingAssistant(BaseModel):
-    """Transfer work to a specialized flight booking assistant."""
+    """Transfiere el trabajo a un asistente especializado en vuelos."""
 
     request: str = Field(
-        description="Follow-up questions needed to clarify the flight request."
+        description="Preguntas de seguimiento para aclarar la solicitud de vuelo."
+    )
+
+
+class ToHotelBookingAssistant(BaseModel):
+    """Transfiere el trabajo a un asistente especializado en hoteles."""
+
+    request: str = Field(description="Solicitud del usuario sobre la reserva de hotel.")
+
+
+class ToCarRentalAssistant(BaseModel):
+    """Transfiere el trabajo a un asistente especializado en alquiler de coches."""
+
+    request: str = Field(
+        description="Solicitud del usuario sobre el alquiler de un coche."
+    )
+
+
+class ToExcursionAssistant(BaseModel):
+    """Transfiere el trabajo a un asistente especializado en excursiones."""
+
+    request: str = Field(
+        description="Solicitud del usuario sobre recomendaciones de viaje o excursiones."
     )
 
 
 llm = ChatOpenAI(
     model="deepseek-chat",
-    base_url="https://api.deepseek.com/v1",
     api_key=os.getenv("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com",
     temperature=0,
 )
 
@@ -59,127 +87,230 @@ primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a customer support assistant. Your main role is to answer general questions and delegate flight modification tasks to the specialized assistant. User flight information: <Flights>{user_info}</Flights>. Current time: {time}.",
+            "Eres un asistente de soporte al cliente. Tu rol es responder preguntas generales y delegar tareas de reserva (vuelos, hoteles, coches, excursiones) al asistente apropiado. Información del vuelo del usuario: <Flights>{user_info}</Flights>. Hora actual: {time}.",
         ),
         ("placeholder", "{messages}"),
     ]
 ).partial(time=datetime.now)
-
+assistant_runnable = primary_assistant_prompt | llm.bind_tools(
+    primary_assistant_tools
+    + [
+        ToFlightBookingAssistant,
+        ToHotelBookingAssistant,
+        ToCarRentalAssistant,
+        ToExcursionAssistant,
+    ]
+)
 flight_booking_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a specialized assistant for managing flight updates. The primary assistant delegates work to you. Confirm flight details with the customer. If the task is completed or the user changes their mind, use the CompleteOrEscalate tool. Current time: {time}.",
+            "Eres un asistente especializado en gestionar actualizaciones de vuelos. Confirma los detalles con el cliente. Si la tarea se completa, usa la herramienta CompleteOrEscalate.",
         ),
         ("placeholder", "{messages}"),
     ]
-).partial(time=datetime.now)
-
-assistant_runnable = primary_assistant_prompt | llm.bind_tools(
-    primary_assistant_tools + [ToFlightBookingAssistant]
 )
-
 flight_runnable = flight_booking_prompt | llm.bind_tools(
-    flight_tools + [CompleteOrEscalate]
+    flight_safe_tools + flight_sensitive_tools + [CompleteOrEscalate]
+)
+
+hotel_booking_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres un asistente especializado en reservar hoteles. Ayuda al usuario a encontrar y reservar un hotel. Si la tarea se completa, usa CompleteOrEscalate.",
+        ),
+        ("placeholder", "{messages}"),
+    ]
+)
+hotel_runnable = hotel_booking_prompt | llm.bind_tools(
+    hotel_safe_tools + hotel_sensitive_tools + [CompleteOrEscalate]
+)
+
+car_rental_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres un asistente especializado en alquilar coches. Ayuda al usuario a encontrar y reservar un coche. Si la tarea se completa, usa CompleteOrEscalate.",
+        ),
+        ("placeholder", "{messages}"),
+    ]
+)
+car_rental_runnable = car_rental_prompt | llm.bind_tools(
+    car_rental_safe_tools + car_rental_sensitive_tools + [CompleteOrEscalate]
+)
+
+excursion_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres un asistente especializado en recomendar y reservar excursiones. Si la tarea se completa, usa CompleteOrEscalate.",
+        ),
+        ("placeholder", "{messages}"),
+    ]
+)
+excursion_runnable = excursion_prompt | llm.bind_tools(
+    excursion_safe_tools + excursion_sensitive_tools + [CompleteOrEscalate]
 )
 
 
-def fetch_user_info_node(state: State) -> dict:
-    """Fetch user flight information."""
-    return {"user_info": fetch_user_flight_information.invoke({})}
-
-
-def primary_assistant_node(state: State) -> dict:
-    """Primary assistant node that handles general queries."""
+def primary_assistant_node(state: State):
     return {"messages": [assistant_runnable.invoke(state)]}
 
 
-def flight_assistant_node(state: State) -> dict:
-    """Flight assistant node that handles flight modifications."""
+def flight_assistant_node(state: State):
     return {"messages": [flight_runnable.invoke(state)]}
 
 
-def enter_flight_assistant_node(state: State) -> dict:
-    """Entry node for flight assistant."""
-    tool_call_id = state["messages"][-1].tool_calls[0]["id"]
-    return {
-        "messages": [
-            ToolMessage(
-                content="Transferring to flight assistant to handle your flight request.",
-                tool_call_id=tool_call_id,
-            )
-        ],
-        "dialog_state": "flight_assistant",
-    }
+def hotel_assistant_node(state: State):
+    return {"messages": [hotel_runnable.invoke(state)]}
+
+
+def car_rental_assistant_node(state: State):
+    return {"messages": [car_rental_runnable.invoke(state)]}
+
+
+def excursion_assistant_node(state: State):
+    return {"messages": [excursion_runnable.invoke(state)]}
+
+
+def create_entry_node(assistant_name: str, new_dialog_state: str) -> callable:
+    def entry_node(state: State) -> dict:
+        tool_call_id = state["messages"][-1].tool_calls[0]["id"]
+        return {
+            "messages": [
+                ToolMessage(
+                    content=f"Entrando al asistente de {assistant_name}.",
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            "dialog_state": new_dialog_state,
+        }
+
+    return entry_node
 
 
 def leave_skill_node(state: State) -> dict:
-    """Node to return to primary assistant."""
     tool_call_id = state["messages"][-1].tool_calls[0]["id"]
     return {
         "dialog_state": "pop",
         "messages": [
             ToolMessage(
-                content="Returning to primary assistant.", tool_call_id=tool_call_id
+                content="Regresando al asistente principal.", tool_call_id=tool_call_id
             )
         ],
     }
 
 
-def route_primary_assistant(state: State) -> str:
-    """Route from primary assistant based on tool calls."""
+def route_primary_assistant(state: State):
     route = tools_condition(state)
     if route == END:
         return END
+    tool_call = state["messages"][-1].tool_calls[0]
+    if tool_call["name"] == ToFlightBookingAssistant.__name__:
+        return "enter_flight_assistant"
+    if tool_call["name"] == ToHotelBookingAssistant.__name__:
+        return "enter_hotel_assistant"
+    if tool_call["name"] == ToCarRentalAssistant.__name__:
+        return "enter_car_rental_assistant"
+    if tool_call["name"] == ToExcursionAssistant.__name__:
+        return "enter_excursion_assistant"
+    return "primary_tools_node"
 
-    # Check if there are tool calls
-    if state["messages"][-1].tool_calls:
-        tool_call = state["messages"][-1].tool_calls[0]
-        if tool_call["name"] == ToFlightBookingAssistant.__name__:
-            return "enter_flight_assistant"
-        return "primary_tools_node"
 
-    return "primary_assistant"
-
-
-def route_flight_assistant(state: State) -> str:
-    """Route from flight assistant based on tool calls."""
-    route = tools_condition(state)
-    if route == END:
-        return END
-
-    if state["messages"][-1].tool_calls:
+def create_skill_router(safe_tools: list) -> callable:
+    def router(state: State):
+        route = tools_condition(state)
+        if route == END:
+            return END
         tool_call = state["messages"][-1].tool_calls[0]
         if tool_call["name"] == CompleteOrEscalate.__name__:
             return "leave_skill"
-        return "flight_tools_node"
+        safe_tool_names = {t.name for t in safe_tools}
+        if tool_call["name"] in safe_tool_names:
+            return "safe_tools"
+        return "sensitive_tools"
 
-    return "flight_assistant"
+    return router
+
+
+def route_to_workflow(state: State):
+    return (
+        state.get("dialog_state", [])[-1]
+        if state.get("dialog_state")
+        else "primary_assistant"
+    )
 
 
 builder = StateGraph(State)
 
-builder.add_node("fetch_user_info", fetch_user_info_node)
+builder.add_node(
+    "fetch_user_info",
+    lambda state: {"user_info": fetch_user_flight_information.invoke({})},
+)
 builder.add_node("primary_assistant", primary_assistant_node)
-builder.add_node("flight_assistant", flight_assistant_node)
 builder.add_node("primary_tools_node", ToolNode(primary_assistant_tools))
-builder.add_node("flight_tools_node", ToolNode(flight_tools))
-builder.add_node("enter_flight_assistant", enter_flight_assistant_node)
 builder.add_node("leave_skill", leave_skill_node)
 
-builder.add_edge(START, "fetch_user_info")
-builder.add_edge("fetch_user_info", "primary_assistant")
+builder.add_node(
+    "enter_flight_assistant", create_entry_node("Vuelos", "flight_assistant")
+)
+builder.add_node("flight_assistant", flight_assistant_node)
+builder.add_node("flight_safe_tools", ToolNode(flight_safe_tools))
+builder.add_node("flight_sensitive_tools", ToolNode(flight_sensitive_tools))
 
+builder.add_node(
+    "enter_hotel_assistant", create_entry_node("Hoteles", "hotel_assistant")
+)
+builder.add_node("hotel_assistant", hotel_assistant_node)
+builder.add_node("hotel_safe_tools", ToolNode(hotel_safe_tools))
+builder.add_node("hotel_sensitive_tools", ToolNode(hotel_sensitive_tools))
+
+builder.add_node(
+    "enter_car_rental_assistant",
+    create_entry_node("Alquiler de Coches", "car_rental_assistant"),
+)
+builder.add_node("car_rental_assistant", car_rental_assistant_node)
+builder.add_node("car_rental_safe_tools", ToolNode(car_rental_safe_tools))
+builder.add_node("car_rental_sensitive_tools", ToolNode(car_rental_sensitive_tools))
+
+builder.add_node(
+    "enter_excursion_assistant", create_entry_node("Excursiones", "excursion_assistant")
+)
+builder.add_node("excursion_assistant", excursion_assistant_node)
+builder.add_node("excursion_safe_tools", ToolNode(excursion_safe_tools))
+builder.add_node("excursion_sensitive_tools", ToolNode(excursion_sensitive_tools))
+
+builder.add_edge(START, "fetch_user_info")
+builder.add_conditional_edges("fetch_user_info", route_to_workflow)
 builder.add_conditional_edges("primary_assistant", route_primary_assistant)
 builder.add_edge("primary_tools_node", "primary_assistant")
-
-builder.add_edge("enter_flight_assistant", "flight_assistant")
-builder.add_conditional_edges("flight_assistant", route_flight_assistant)
-builder.add_edge("flight_tools_node", "flight_assistant")
 builder.add_edge("leave_skill", "primary_assistant")
 
-builder.add_edge("primary_tools_node", "primary_assistant")
-builder.add_edge("flight_tools_node", "flight_assistant")
+for skill in ["flight", "hotel", "car_rental", "excursion"]:
+    builder.add_edge(f"enter_{skill}_assistant", f"{skill}_assistant")
+    builder.add_edge(f"{skill}_safe_tools", f"{skill}_assistant")
+    builder.add_edge(f"{skill}_sensitive_tools", f"{skill}_assistant")
+
+    safe_tools_list = globals()[f"{skill}_safe_tools"]
+    builder.add_conditional_edges(
+        f"{skill}_assistant",
+        create_skill_router(safe_tools_list),
+        {
+            "leave_skill": "leave_skill",
+            "safe_tools": f"{skill}_safe_tools",
+            "sensitive_tools": f"{skill}_sensitive_tools",
+            END: END,
+        },
+    )
 
 memory = MemorySaver()
-graph = builder.compile(checkpointer=memory)
+graph = builder.compile(
+    checkpointer=memory,
+    interrupt_before=[
+        "flight_sensitive_tools",
+        "hotel_sensitive_tools",
+        "car_rental_sensitive_tools",
+        "excursion_sensitive_tools",
+    ],
+)

@@ -1,9 +1,9 @@
 import sqlite3
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, Union
 
 import pytz
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
@@ -123,25 +123,195 @@ def cancel_ticket(ticket_no: str, config: RunnableConfig) -> str:
     return "¡Billete cancelado con éxito!"
 
 
-tavily_tool = TavilySearchResults(max_results=5)
+@tool
+def search_car_rentals(
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    price_tier: Optional[str] = None,
+    start_date: Optional[Union[datetime, date]] = None,
+    end_date: Optional[Union[datetime, date]] = None,
+) -> list[dict]:
+    """Busca alquileres de coches."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    query = "SELECT * FROM car_rentals WHERE 1=1"
+    params = []
+    if location:
+        query += " AND location LIKE ?"
+        params.append(f"%{location}%")
+    if name:
+        query += " AND name LIKE ?"
+        params.append(f"%{name}%")
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    conn.close()
+    return [
+        dict(zip([column[0] for column in cursor.description], row)) for row in results
+    ]
+
+
+@tool
+def book_car_rental(rental_id: int) -> str:
+    """Reserva un alquiler de coche por su ID."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE car_rentals SET booked = 1 WHERE id = ?", (rental_id,))
+    conn.commit()
+    if cursor.rowcount > 0:
+        conn.close()
+        return f"Alquiler de coche {rental_id} reservado con éxito."
+    conn.close()
+    return f"No se encontró un alquiler de coche con ID {rental_id}."
+
+
+@tool
+def cancel_car_rental(rental_id: int) -> str:
+    """Cancela una reserva de alquiler de coche por su ID."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE car_rentals SET booked = 0 WHERE id = ?", (rental_id,))
+    conn.commit()
+    if cursor.rowcount > 0:
+        conn.close()
+        return f"Reserva de alquiler de coche {rental_id} cancelada con éxito."
+    conn.close()
+    return f"No se encontró un alquiler de coche con ID {rental_id}."
+
+
+@tool
+def search_hotels(
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    price_tier: Optional[str] = None,
+    checkin_date: Optional[Union[datetime, date]] = None,
+    checkout_date: Optional[Union[datetime, date]] = None,
+) -> list[dict]:
+    """Busca hoteles."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    query = "SELECT * FROM hotels WHERE 1=1"
+    params = []
+    if location:
+        query += " AND location LIKE ?"
+        params.append(f"%{location}%")
+    if name:
+        query += " AND name LIKE ?"
+        params.append(f"%{name}%")
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    conn.close()
+    return [
+        dict(zip([column[0] for column in cursor.description], row)) for row in results
+    ]
+
+
+@tool
+def book_hotel(hotel_id: int) -> str:
+    """Reserva un hotel por su ID."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE hotels SET booked = 1 WHERE id = ?", (hotel_id,))
+    conn.commit()
+    if cursor.rowcount > 0:
+        conn.close()
+        return f"Hotel {hotel_id} reservado con éxito."
+    conn.close()
+    return f"No se encontró un hotel con ID {hotel_id}."
+
+
+@tool
+def cancel_hotel(hotel_id: int) -> str:
+    """Cancela una reserva de hotel por su ID."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE hotels SET booked = 0 WHERE id = ?", (hotel_id,))
+    conn.commit()
+    if cursor.rowcount > 0:
+        conn.close()
+        return f"Reserva de hotel {hotel_id} cancelada con éxito."
+    conn.close()
+    return f"No se encontró un hotel con ID {hotel_id}."
+
+
+@tool
+def search_trip_recommendations(
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    keywords: Optional[str] = None,
+) -> list[dict]:
+    """Busca recomendaciones de viajes y excursiones."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    query = "SELECT * FROM trip_recommendations WHERE 1=1"
+    params = []
+    if location:
+        query += " AND location LIKE ?"
+        params.append(f"%{location}%")
+    if name:
+        query += " AND name LIKE ?"
+        params.append(f"%{name}%")
+    if keywords:
+        pass
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    conn.close()
+    return [
+        dict(zip([column[0] for column in cursor.description], row)) for row in results
+    ]
+
+
+@tool
+def book_excursion(recommendation_id: int) -> str:
+    """Reserva una excursión por su ID."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE trip_recommendations SET booked = 1 WHERE id = ?", (recommendation_id,)
+    )
+    conn.commit()
+    if cursor.rowcount > 0:
+        conn.close()
+        return f"Excursión {recommendation_id} reservada con éxito."
+    conn.close()
+    return f"No se encontró una excursión con ID {recommendation_id}."
+
+
+@tool
+def cancel_excursion(recommendation_id: int) -> str:
+    """Cancela una reserva de excursión por su ID."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE trip_recommendations SET booked = 0 WHERE id = ?", (recommendation_id,)
+    )
+    conn.commit()
+    if cursor.rowcount > 0:
+        conn.close()
+        return f"Reserva de excursión {recommendation_id} cancelada con éxito."
+    conn.close()
+    return f"No se encontró una excursión con ID {recommendation_id}."
 
 
 @tool
 def lookup_policy(query: str) -> str:
-    """Consulta las políticas de la compañía para verificar si ciertas opciones están permitidas."""
-    if "sooner" in query or "change" in query:
-        return "Los cambios de vuelo están permitidos con una tarifa de $100 si se realizan más de 24 horas antes de la salida."
-    return "No se encontró una política específica para su consulta. Por favor, sea más específico."
+    """Consulta las políticas de la compañía."""
+    if "cambio" in query or "modificar" in query:
+        return "Los cambios están permitidos con una tarifa de $100 si se realizan más de 24 horas antes de la salida."
+    return "No se encontró una política específica para su consulta."
 
 
-flight_tools = [
-    search_flights,
-    update_ticket_to_new_flight,
-    cancel_ticket,
-    lookup_policy,
-]
+tavily_tool = TavilySearch(max_results=3)
 
-primary_assistant_tools = [
-    tavily_tool,
-    fetch_user_flight_information,
-]
+primary_assistant_tools = [tavily_tool, fetch_user_flight_information, lookup_policy]
+
+flight_safe_tools = [search_flights, lookup_policy]
+flight_sensitive_tools = [update_ticket_to_new_flight, cancel_ticket]
+
+car_rental_safe_tools = [search_car_rentals, lookup_policy]
+car_rental_sensitive_tools = [book_car_rental, cancel_car_rental]
+
+hotel_safe_tools = [search_hotels, lookup_policy]
+hotel_sensitive_tools = [book_hotel, cancel_hotel]
+
+excursion_safe_tools = [search_trip_recommendations, lookup_policy]
+excursion_sensitive_tools = [book_excursion, cancel_excursion]

@@ -11,6 +11,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from setup_db import setup_database
 
 from graph import graph
 
@@ -19,6 +20,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN no está configurado en el archivo .env")
+
 
 def generate_diagram():
     """Generate a PNG diagram of the LangGraph workflow."""
@@ -53,7 +55,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja los mensajes del usuario y los procesa con el grafo."""
-    chat_id = update.message.chat_id
     user_input = update.message.text
 
     if "thread_id" not in context.user_data:
@@ -63,13 +64,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     thread_id = context.user_data["thread_id"]
+    config = {"configurable": {"passenger_id": "3442 587242", "thread_id": thread_id}}
 
-    config = {
-        "configurable": {
-            "passenger_id": "3442 587242",
-            "thread_id": thread_id,
-        }
-    }
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
+    )
 
     events = graph.stream(
         {"messages": [HumanMessage(content=user_input)]}, config, stream_mode="values"
@@ -81,9 +80,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             final_response = event["messages"][-1]
 
     snapshot = graph.get_state(config)
-    if snapshot.next:
+
+    interrupt_nodes = [
+        "flight_sensitive_tools",
+        "hotel_sensitive_tools",
+        "car_rental_sensitive_tools",
+        "excursion_sensitive_tools",
+    ]
+    if snapshot.next and any(node in snapshot.next for node in interrupt_nodes):
         await update.message.reply_text(
-            "El agente quiere realizar una acción que modifica tus datos (ej. cambiar un vuelo). Aprobando automáticamente para esta demostración..."
+            "El agente quiere realizar una acción que modifica datos (ej. hacer una reserva). Aprobando automáticamente para esta demo..."
+        )
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
         )
 
         events = graph.stream(None, config, stream_mode="values")
@@ -99,13 +108,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Inicia el bot de Telegram."""
+    print("Configurando la base de datos...")
+    setup_database()
+
     print("Iniciando bot...")
-
-    print("Generando diagrama del grafo...")
-    generate_diagram()
-
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
