@@ -1,5 +1,6 @@
 import os
 import uuid
+import re
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -14,6 +15,29 @@ from telegram.ext import (
 from setup_db import setup_database
 
 from graph import graph
+
+
+def clean_telegram_message(text: str) -> str:
+    """
+    Clean Markdown formatting and make text Telegram-compatible.
+    Telegram doesn't support Markdown by default, so we need to remove formatting.
+    """
+    if not text:
+        return text
+
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'_(.*?)_', r'\1', text)
+
+    text = re.sub(r'`(.*?)`', r'\1', text)
+
+    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
+
+    return text
 
 load_dotenv()
 
@@ -101,7 +125,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 final_response = event["messages"][-1]
 
     if final_response and final_response.content:
-        await update.message.reply_text(final_response.content)
+        cleaned_response = clean_telegram_message(final_response.content)
+        await update.message.reply_text(cleaned_response)
     else:
         await update.message.reply_text("Acción procesada. ¿Necesitas algo más?")
 
