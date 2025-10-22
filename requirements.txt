@@ -1,0 +1,12 @@
+langchain-core>=0.2.1
+langgraph
+langchain-community
+langchain
+langchain-openai
+tavily-python
+pandas
+python-dotenv
+python-telegram-bot
+requests
+pytz
+pygraphviz
