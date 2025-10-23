@@ -1,66 +1,68 @@
-import os
-import shutil
+# ================================================================
+# setup_db.py — Base de datos de prueba para el asistente de vuelos
+# ================================================================
+
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-import pandas as pd
-import requests
-
-db_url = "https://storage.googleapis.com/benchmarks-artifacts/travel-db/travel2.sqlite"
-local_file = "travel2.sqlite"
-backup_file = "travel2.backup.sqlite"
-
+DB_FILE = "travel2.sqlite"
 
 def setup_database():
-    """Descarga y prepara la base de datos SQLite."""
-    if not os.path.exists(local_file):
-        response = requests.get(db_url)
-        response.raise_for_status()
-        with open(local_file, "wb") as f:
-            f.write(response.content)
-        shutil.copy(local_file, backup_file)
+    """Crea una base de datos SQLite pequeña de prueba con vuelos y usuarios."""
 
-    conn = sqlite3.connect(local_file)
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    tables = pd.read_sql(
-        "SELECT name FROM sqlite_master WHERE type='table';", conn
-    ).name.tolist()
-    tdf = {}
-    for t in tables:
-        tdf[t] = pd.read_sql(f"SELECT * from {t}", conn)
-
-    example_time = pd.to_datetime(
-        tdf["flights"]["actual_departure"].replace("\\N", pd.NaT)
-    ).max()
-    current_time = pd.to_datetime("now").tz_localize(example_time.tz)
-    time_diff = current_time - example_time
-
-    tdf["bookings"]["book_date"] = (
-        pd.to_datetime(tdf["bookings"]["book_date"].replace("\\N", pd.NaT), utc=True)
-        + time_diff
-    )
-
-    datetime_columns = [
-        "scheduled_departure",
-        "scheduled_arrival",
-        "actual_departure",
-        "actual_arrival",
-    ]
-    for column in datetime_columns:
-        tdf["flights"][column] = (
-            pd.to_datetime(tdf["flights"][column].replace("\\N", pd.NaT)) + time_diff
+    # --- Crear tabla de usuarios ---
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            passenger_id TEXT PRIMARY KEY,
+            name TEXT
         )
+    """)
 
-    for table_name, df in tdf.items():
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
+    # --- Crear tabla de vuelos ---
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS flights (
+            flight_id TEXT PRIMARY KEY,
+            passenger_id TEXT,
+            origin TEXT,
+            destination TEXT,
+            scheduled_departure TEXT,
+            scheduled_arrival TEXT,
+            actual_departure TEXT,
+            actual_arrival TEXT,
+            FOREIGN KEY(passenger_id) REFERENCES users(passenger_id)
+        )
+    """)
+
+    # --- Insertar datos de prueba de usuarios ---
+    users = [
+        ("U1001", "Alice"),
+        ("U1002", "Bob"),
+        ("U1003", "Carlos"),
+    ]
+    cursor.executemany("INSERT OR REPLACE INTO users (passenger_id, name) VALUES (?, ?)", users)
+
+    # --- Insertar datos de prueba de vuelos ---
+    now = datetime.now()
+    flights = [
+        ("F001", "U1001", "Madrid", "Paris", now + timedelta(hours=2), now + timedelta(hours=4), now + timedelta(hours=2, minutes=5), now + timedelta(hours=4, minutes=10)),
+        ("F002", "U1001", "Paris", "Berlin", now + timedelta(days=1, hours=3), now + timedelta(days=1, hours=5), None, None),
+        ("F003", "U1002", "New York", "London", now + timedelta(hours=5), now + timedelta(hours=11), now + timedelta(hours=5, minutes=10), now + timedelta(hours=11, minutes=5)),
+        ("F004", "U1003", "Tokyo", "Seoul", now + timedelta(hours=8), now + timedelta(hours=10), None, None),
+    ]
+    cursor.executemany("""
+        INSERT OR REPLACE INTO flights (
+            flight_id, passenger_id, origin, destination,
+            scheduled_departure, scheduled_arrival,
+            actual_departure, actual_arrival
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, [(f[0], f[1], f[2], f[3], f[4].isoformat(), f[5].isoformat(), f[6].isoformat() if f[6] else None, f[7].isoformat() if f[7] else None) for f in flights])
 
     conn.commit()
     conn.close()
-    print("Fechas actualizadas correctamente.")
-    return local_file
-
+    print(f"Base de datos '{DB_FILE}' creada con datos de prueba.")
 
 if __name__ == "__main__":
     setup_database()
-    print("Configuración de la base de datos completada.")
