@@ -6,7 +6,9 @@ import pytz
 from langchain_tavily import TavilySearch
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from dotenv import load_dotenv
 
+load_dotenv()
 db = "travel2.sqlite"
 
 
