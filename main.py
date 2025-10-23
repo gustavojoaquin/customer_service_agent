@@ -1,6 +1,6 @@
 import os
-import uuid
 import re
+import uuid
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -12,32 +12,28 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from setup_db import setup_database
 
 from graph import graph
 
 
 def clean_telegram_message(text: str) -> str:
-    """
-    Clean Markdown formatting and make text Telegram-compatible.
-    Telegram doesn't support Markdown by default, so we need to remove formatting.
-    """
     if not text:
         return text
 
-    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
 
-    text = re.sub(r'\*(.*?)\*', r'\1', text)
-    text = re.sub(r'_(.*?)_', r'\1', text)
+    text = re.sub(r"\*(.*?)\*", r"\1", text)
+    text = re.sub(r"_(.*?)_", r"\1", text)
 
-    text = re.sub(r'`(.*?)`', r'\1', text)
+    text = re.sub(r"`(.*?)`", r"\1", text)
 
-    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+    text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
 
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()
 
     return text
+
 
 load_dotenv()
 
@@ -47,7 +43,6 @@ if not TELEGRAM_TOKEN:
 
 
 def generate_diagram():
-    """Generate a PNG diagram of the LangGraph workflow."""
     try:
         from langgraph.graph import StateGraph
 
@@ -69,26 +64,27 @@ def generate_diagram():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja el comando /start."""
     chat_id = update.message.chat_id
     context.user_data["thread_id"] = str(uuid.uuid4())
+
+    context.user_data["passenger_id"] = None
+
     await update.message.reply_text(
-        f"👋 ¡Hola! Soy tu asistente de vuelos. Mi ID de conversación es: {context.user_data['thread_id']}\n\n¿Cómo puedo ayudarte hoy?"
+        f"👋 ¡Hola! Soy tu asistente de vuelos. Mi ID de conversación es: {context.user_data['thread_id']}\n\n"
+        "Por favor, proporciona tu ID de pasajero o número de vuelo para continuar:"
     )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja los mensajes del usuario y los procesa con el grafo."""
     user_input = update.message.text
 
     if "thread_id" not in context.user_data:
         context.user_data["thread_id"] = str(uuid.uuid4())
-        await update.message.reply_text(
-            f"Iniciando nueva conversación. ID: {context.user_data['thread_id']}"
-        )
 
     thread_id = context.user_data["thread_id"]
-    config = {"configurable": {"passenger_id": "3442 587242", "thread_id": thread_id}}
+
+    passenger_id = context.user_data.get("passenger_id", "pending_validation")
+    config = {"configurable": {"passenger_id": passenger_id, "thread_id": thread_id}}
 
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
@@ -127,15 +123,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if final_response and final_response.content:
         cleaned_response = clean_telegram_message(final_response.content)
         await update.message.reply_text(cleaned_response)
+
+        if (
+            "passenger_id" in context.user_data
+            and context.user_data["passenger_id"] == "pending_validation"
+        ):
+            pass
     else:
         await update.message.reply_text("Acción procesada. ¿Necesitas algo más?")
 
 
 def main():
-    """Inicia el bot de Telegram."""
-    print("Configurando la base de datos...")
-    setup_database()
-
     print("Iniciando bot...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
