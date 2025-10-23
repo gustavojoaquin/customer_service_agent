@@ -15,22 +15,28 @@ db = "travel2.sqlite"
 @tool
 def fetch_user_flight_information(config: RunnableConfig) -> str:
     """Obtiene toda la información de vuelos y asientos para el usuario actual."""
-    passenger_id = config.get("configurable", {}).get("passenger_id")
+    flight_id = config.get("configurable", {}).get("flight_id")
 
-    if not passenger_id or passenger_id == "pending_validation":
-        return "El ID de pasajero aún no ha sido validado. Por favor, proporcione su ID de pasajero o número de vuelo para continuar."
+    if not flight_id or flight_id == "pending_validation":
+        return "El ID de vuelo aún no ha sido validado. Por favor, proporcione su ID de vuelo para continuar. Puede usar la herramienta 'validate_flight_id' para validar su ID de vuelo."
 
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
+
+    try:
+        flight_id_int = int(flight_id)
+    except ValueError:
+        return f"ID de vuelo inválido: '{flight_id}'. Los IDs de vuelo deben ser números."
+
     query = """
     SELECT t.ticket_no, t.book_ref, f.flight_id, f.flight_no, f.departure_airport, f.arrival_airport, f.scheduled_departure, f.scheduled_arrival, bp.seat_no, tf.fare_conditions
     FROM tickets t
     JOIN ticket_flights tf ON t.ticket_no = tf.ticket_no
     JOIN flights f ON tf.flight_id = f.flight_id
     JOIN boarding_passes bp ON bp.ticket_no = t.ticket_no AND bp.flight_id = f.flight_id
-    WHERE t.passenger_id = ?
+    WHERE f.flight_id = ?
     """
-    cursor.execute(query, (passenger_id,))
+    cursor.execute(query, (flight_id_int,))
     rows = cursor.fetchall()
     column_names = [column[0] for column in cursor.description]
     results = [dict(zip(column_names, row)) for row in rows]
@@ -38,7 +44,7 @@ def fetch_user_flight_information(config: RunnableConfig) -> str:
     conn.close()
 
     if not results:
-        return f"No se encontró información de vuelos para el ID de pasajero: {passenger_id}. Por favor, verifique que el ID sea correcto."
+        return f"No se encontró información de vuelos para el ID de vuelo: {flight_id}. Por favor, verifique que el ID sea correcto. Los IDs válidos son números como 1185, 3979, etc."
 
     formatted_flights = []
     for flight in results:
@@ -187,9 +193,9 @@ def update_ticket_to_new_flight(
     ticket_no: str, new_flight_id: int, config: RunnableConfig
 ) -> str:
     """Actualiza el billete del usuario a un nuevo vuelo válido."""
-    passenger_id = config.get("configurable", {}).get("passenger_id")
-    if not passenger_id:
-        raise ValueError("No se ha configurado un ID de pasajero.")
+    flight_id = config.get("configurable", {}).get("flight_id")
+    if not flight_id:
+        raise ValueError("No se ha configurado un ID de vuelo.")
 
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
@@ -214,9 +220,9 @@ def update_ticket_to_new_flight(
 @tool
 def cancel_ticket(ticket_no: str, config: RunnableConfig) -> str:
     """Cancela el billete del usuario y lo elimina de la base de datos."""
-    passenger_id = config.get("configurable", {}).get("passenger_id")
-    if not passenger_id:
-        raise ValueError("No se ha configurado un ID de pasajero.")
+    flight_id = config.get("configurable", {}).get("flight_id")
+    if not flight_id:
+        raise ValueError("No se ha configurado un ID de vuelo.")
 
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
@@ -234,46 +240,103 @@ def cancel_ticket(ticket_no: str, config: RunnableConfig) -> str:
 
 
 @tool
-def search_car_rentals(
-    location: Optional[str] = None,
-    name: Optional[str] = None,
-    price_tier: Optional[str] = None,
-    start_date: Optional[Union[datetime, date]] = None,
-    end_date: Optional[Union[datetime, date]] = None,
-) -> str:
-    """Busca alquileres de coches."""
+def book_flight(flight_id: int, passenger_name: str, passenger_id: str) -> str:
+    """Reserva un nuevo vuelo para un pasajero."""
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
-    query = "SELECT * FROM car_rentals WHERE 1=1"
+
+    cursor.execute("SELECT flight_id FROM flights WHERE flight_id = ?", (flight_id,))
+    if not cursor.fetchone():
+        conn.close()
+        return f"Error: No se encontró el vuelo con ID {flight_id}."
+
+    import random
+    ticket_no = f"{flight_id:06d}{random.randint(1000, 9999)}"
+
+    import string
+    book_ref = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+    try:
+        cursor.execute(
+            "INSERT INTO bookings (book_ref, book_date, total_amount) VALUES (?, datetime('now'), ?)",
+            (book_ref, 0)
+        )
+
+        cursor.execute(
+            "INSERT INTO tickets (ticket_no, book_ref, passenger_id, passenger_name) VALUES (?, ?, ?, ?)",
+            (ticket_no, book_ref, passenger_id, passenger_name)
+        )
+
+        cursor.execute(
+            "INSERT INTO ticket_flights (ticket_no, flight_id, fare_conditions, amount) VALUES (?, ?, ?, ?)",
+            (ticket_no, flight_id, "Economy", 0)
+        )
+
+        conn.commit()
+        conn.close()
+
+        return f"¡Reserva exitosa!\nTicket: {ticket_no}\nVuelo: {flight_id}\nPasajero: {passenger_name}\nReferencia: {book_ref}"
+
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        return f"Error al crear la reserva: {str(e)}"
+
+
+@tool
+def search_available_flights(
+    departure_airport: Optional[str] = None,
+    arrival_airport: Optional[str] = None,
+    start_date: Optional[date | datetime] = None,
+    end_date: Optional[date | datetime] = None,
+    limit: int = 20,
+) -> str:
+    """Busca vuelos disponibles para reserva."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+
+    query = """
+    SELECT f.flight_id, f.flight_no, f.departure_airport, f.arrival_airport,
+           f.scheduled_departure, f.scheduled_arrival, f.status
+    FROM flights f
+    WHERE f.status = 'Scheduled'
+    """
     params = []
-    if location:
-        query += " AND location LIKE ?"
-        params.append(f"%{location}%")
-    if name:
-        query += " AND name LIKE ?"
-        params.append(f"%{name}%")
+
+    if departure_airport:
+        query += " AND f.departure_airport LIKE ?"
+        params.append(f"%{departure_airport}%")
+    if arrival_airport:
+        query += " AND f.arrival_airport LIKE ?"
+        params.append(f"%{arrival_airport}%")
+    if start_date:
+        query += " AND DATE(f.scheduled_departure) >= DATE(?)"
+        params.append(start_date)
+    if end_date:
+        query += " AND DATE(f.scheduled_departure) <= DATE(?)"
+        params.append(end_date)
+
+    query += " ORDER BY f.scheduled_departure LIMIT ?"
+    params.append(limit)
+
     cursor.execute(query, params)
-    results = cursor.fetchall()
+    rows = cursor.fetchall()
+    column_names = [column[0] for column in cursor.description]
+    results = [dict(zip(column_names, row)) for row in rows]
+    cursor.close()
     conn.close()
 
     if not results:
-        return "No se encontraron alquileres de coches que coincidan con los criterios."
+        return "No se encontraron vuelos disponibles que coincidan con los criterios."
 
-    rentals = []
-    for row in results:
-        rental_dict = dict(zip([column[0] for column in cursor.description], row))
-        formatted_rental = {}
-        for key, value in rental_dict.items():
-            if isinstance(value, (datetime, date)):
-                formatted_rental[key] = value.isoformat()
-            else:
-                formatted_rental[key] = str(value) if value is not None else "N/A"
-        rentals.append(formatted_rental)
+    formatted_flights = []
+    for flight in results:
+        formatted_flight = (
+            f"ID: {flight['flight_id']} - Vuelo {flight['flight_no']}: {flight['departure_airport']} → {flight['arrival_airport']} "
+            f"(Salida: {flight['scheduled_departure']}, Llegada: {flight['scheduled_arrival']})"
+        )
+        formatted_flights.append(formatted_flight)
 
-    return f"Se encontraron {len(rentals)} alquileres de coches:\n" + "\n".join(
-        f"- ID: {r['id']}, Nombre: {r['name']}, Ubicación: {r['location']}, Precio: {r.get('price_tier', 'N/A')}"
-        for r in rentals
-    )
+    return f"Vuelos disponibles ({len(results)} encontrados):\n" + "\n".join(formatted_flights)
 
 
 @tool
@@ -1070,25 +1133,67 @@ def delete_ticket(ticket_no: str) -> str:
 
 
 @tool
-def lookup_policy(query: str) -> str:
-    """Consulta las políticas de la compañía."""
-    if "cambio" in query or "modificar" in query:
-        return "Los cambios están permitidos con una tarifa de $100 si se realizan más de 24 horas antes de la salida."
-    return "No se encontró una política específica para su consulta."
+def validate_flight_id(flight_id: str, config: RunnableConfig) -> str:
+    """Valida un ID de vuelo y lo establece para el usuario actual."""
+    if not flight_id or not flight_id.strip():
+        return "Por favor, proporcione un ID de vuelo válido."
+
+    try:
+        flight_id_int = int(flight_id.strip())
+    except ValueError:
+        return f"ID de vuelo inválido: '{flight_id}'. Los IDs de vuelo deben ser números."
+
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("SELECT flight_id FROM flights WHERE flight_id = ?", (flight_id_int,))
+    flight_exists = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not flight_exists:
+        return f"No se encontró un vuelo con ID {flight_id}. Por favor, verifique que el ID sea correcto."
+
+    return f"ID de vuelo {flight_id} validado correctamente. Ahora puedo ayudarte con la información de tu vuelo."
 
 
-tavily_tool = TavilySearch(max_results=3)
+@tool
+def search_car_rentals(
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    price_tier: Optional[str] = None,
+    start_date: Optional[Union[datetime, date]] = None,
+    end_date: Optional[Union[datetime, date]] = None,
+) -> str:
+    """Busca alquileres de coches."""
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    query = "SELECT * FROM car_rentals WHERE 1=1"
+    params = []
+    if location:
+        query += " AND location LIKE ?"
+        params.append(f"%{location}%")
+    if name:
+        query += " AND name LIKE ?"
+        params.append(f"%{name}%")
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    conn.close()
 
-primary_assistant_tools = [tavily_tool, fetch_user_flight_information, lookup_policy]
+    if not results:
+        return "No se encontraron alquileres de coches que coincidan con los criterios."
 
-flight_safe_tools = [search_flights, lookup_policy]
-flight_sensitive_tools = [update_ticket_to_new_flight, cancel_ticket]
+    rentals = []
+    for row in results:
+        rental_dict = dict(zip([column[0] for column in cursor.description], row))
+        formatted_rental = {}
+        for key, value in rental_dict.items():
+            if isinstance(value, (datetime, date)):
+                formatted_rental[key] = value.isoformat()
+            else:
+                formatted_rental[key] = str(value) if value is not None else "N/A"
+        rentals.append(formatted_rental)
 
-car_rental_safe_tools = [search_car_rentals, lookup_policy]
-car_rental_sensitive_tools = [book_car_rental, cancel_car_rental]
-
-hotel_safe_tools = [search_hotels, lookup_policy]
-hotel_sensitive_tools = [book_hotel, cancel_hotel]
-
-excursion_safe_tools = [search_trip_recommendations, lookup_policy]
-excursion_sensitive_tools = [book_excursion, cancel_excursion]
+    return f"Se encontraron {len(rentals)} alquileres de coches:\n" + "\n".join(
+        f"- ID: {r['id']}, Nombre: {r['name']}, Ubicación: {r['location']}, Precio: {r.get('price_tier', 'N/A')}"
+        for r in rentals
+    )

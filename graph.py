@@ -1,20 +1,112 @@
 import os
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from typing_extensions import TypedDict
 
 from tools import *
 
+primary_assistant_tools = [
+    fetch_user_flight_information,
+    validate_flight_id,
+    search_flights,
+    search_available_flights,
+    search_hotels,
+    search_car_rentals,
+    search_trip_recommendations,
+    search_aircrafts,
+    search_airports,
+    search_boarding_passes,
+    search_bookings,
+    search_seats,
+    search_ticket_flights,
+    search_tickets,
+]
+
+flight_safe_tools = [
+    fetch_user_flight_information,
+    search_flights,
+    search_available_flights,
+    search_aircrafts,
+    search_airports,
+    search_boarding_passes,
+    search_bookings,
+    search_seats,
+    search_ticket_flights,
+    search_tickets,
+]
+
+flight_sensitive_tools = [
+    create_flight,
+    update_flight_status,
+    update_flight_schedule,
+    delete_flight,
+    update_ticket_to_new_flight,
+    cancel_ticket,
+    book_flight,
+    create_boarding_pass,
+    update_boarding_pass_seat,
+    delete_boarding_pass,
+    create_booking,
+    update_booking_amount,
+    delete_booking,
+    create_seat,
+    update_seat_fare_conditions,
+    delete_seat,
+    create_ticket_flight,
+    update_ticket_flight_fare_conditions,
+    update_ticket_flight_amount,
+    delete_ticket_flight,
+    create_aircraft,
+    update_aircraft_range,
+    delete_aircraft,
+    create_airport,
+    update_airport_timezone,
+    delete_airport,
+    create_ticket,
+    update_ticket_passenger,
+    delete_ticket,
+]
+
+hotel_safe_tools = [
+    search_hotels,
+]
+
+hotel_sensitive_tools = [
+    book_hotel,
+    cancel_hotel,
+]
+
+car_rental_safe_tools = [
+    search_car_rentals,
+]
+
+car_rental_sensitive_tools = [
+    book_car_rental,
+    cancel_car_rental,
+]
+
+excursion_safe_tools = [
+    search_trip_recommendations,
+]
+
+excursion_sensitive_tools = [
+    book_excursion,
+    cancel_excursion,
+]
+
+
 
 def update_dialog_stack(left: list[str], right: str | None) -> list[str]:
+    """Función para gestionar la pila de diálogo de asistentes."""
     if right is None:
         return left
     if right == "pop":
@@ -23,8 +115,11 @@ def update_dialog_stack(left: list[str], right: str | None) -> list[str]:
 
 
 class State(TypedDict):
+    """Define el estado del grafo."""
+
     messages: Annotated[list[AnyMessage], lambda x, y: x + y]
     user_info: str
+    flight_id: str
     dialog_state: Annotated[
         list[
             Literal[
@@ -75,9 +170,10 @@ class ToExcursionAssistant(BaseModel):
     )
 
 
+
 llm = ChatOpenAI(
     model="deepseek-chat",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    api_key=SecretStr(os.getenv("DEEPSEEK_API_KEY") or ""),
     base_url="https://api.deepseek.com",
     temperature=0,
 )
@@ -86,11 +182,12 @@ primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres un asistente de soporte al cliente. Tu rol es responder preguntas generales y delegar tareas de reserva (vuelos, hoteles, coches, excursiones) al asistente apropiado. Información del vuelo del usuario: <Flights>{user_info}</Flights>. Hora actual: {time}.",
+            "Eres un asistente de soporte al cliente. **RESPUESTAS EXTREMADAMENTE BREVES Y DIRECTAS.** Máximo 2-3 frases por respuesta. No expliques errores, solo di el resultado. No repitas información. Delega tareas específicas a especialistas. Info vuelos: <Flights>{user_info}</Flights>. Hora: {time}.",
         ),
         ("placeholder", "{messages}"),
     ]
 ).partial(time=datetime.now)
+
 assistant_runnable = primary_assistant_prompt | llm.bind_tools(
     primary_assistant_tools
     + [
@@ -100,15 +197,17 @@ assistant_runnable = primary_assistant_prompt | llm.bind_tools(
         ToExcursionAssistant,
     ]
 )
+
 flight_booking_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres un asistente especializado en gestionar actualizaciones de vuelos. Confirma los detalles con el cliente. Si la tarea se completa, usa la herramienta CompleteOrEscalate.",
+            "Especialista en vuelos. **RESPUESTAS EXTREMADAMENTE CORTAS.** Solo información esencial. No expliques errores. Puedes crear nuevos vuelos con create_flight. Usa CompleteOrEscalate al terminar.",
         ),
         ("placeholder", "{messages}"),
     ]
 )
+
 flight_runnable = flight_booking_prompt | llm.bind_tools(
     flight_safe_tools + flight_sensitive_tools + [CompleteOrEscalate]
 )
@@ -117,11 +216,12 @@ hotel_booking_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres un asistente especializado en reservar hoteles. Ayuda al usuario a encontrar y reservar un hotel. Si la tarea se completa, usa CompleteOrEscalate.",
+            "Especialista en hoteles. **RESPUESTAS MUY CORTAS.** Solo información esencial. Usa CompleteOrEscalate al terminar.",
         ),
         ("placeholder", "{messages}"),
     ]
 )
+
 hotel_runnable = hotel_booking_prompt | llm.bind_tools(
     hotel_safe_tools + hotel_sensitive_tools + [CompleteOrEscalate]
 )
@@ -130,11 +230,12 @@ car_rental_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres un asistente especializado en alquilar coches. Ayuda al usuario a encontrar y reservar un coche. Si la tarea se completa, usa CompleteOrEscalate.",
+            "Especialista en alquiler de coches. **RESPUESTAS MUY CORTAS.** Solo información esencial. Usa CompleteOrEscalate al terminar.",
         ),
         ("placeholder", "{messages}"),
     ]
 )
+
 car_rental_runnable = car_rental_prompt | llm.bind_tools(
     car_rental_safe_tools + car_rental_sensitive_tools + [CompleteOrEscalate]
 )
@@ -143,39 +244,68 @@ excursion_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres un asistente especializado en recomendar y reservar excursiones. Si la tarea se completa, usa CompleteOrEscalate.",
+            "Especialista en excursiones. **RESPUESTAS MUY CORTAS.** Solo información esencial. Usa CompleteOrEscalate al terminar.",
         ),
         ("placeholder", "{messages}"),
     ]
 )
+
 excursion_runnable = excursion_prompt | llm.bind_tools(
     excursion_safe_tools + excursion_sensitive_tools + [CompleteOrEscalate]
 )
 
 
+
+
 def primary_assistant_node(state: State):
+    """Nodo del asistente principal."""
     return {"messages": [assistant_runnable.invoke(state)]}
 
 
 def flight_assistant_node(state: State):
+    """Nodo del asistente de vuelos."""
     return {"messages": [flight_runnable.invoke(state)]}
 
 
 def hotel_assistant_node(state: State):
+    """Nodo del asistente de hoteles."""
     return {"messages": [hotel_runnable.invoke(state)]}
 
 
 def car_rental_assistant_node(state: State):
+    """Nodo del asistente de alquiler de coches."""
     return {"messages": [car_rental_runnable.invoke(state)]}
 
 
 def excursion_assistant_node(state: State):
+    """Nodo del asistente de excursiones."""
     return {"messages": [excursion_runnable.invoke(state)]}
 
 
+def fetch_user_info_node(state: State):
+    """Obtiene la información de vuelo del usuario basada en flight_id."""
+    flight_id = state.get("flight_id", "")
+    if flight_id and flight_id != "pending_validation":
+        config = {"configurable": {"flight_id": flight_id}}
+        try:
+            user_info = fetch_user_flight_information.invoke(config)
+        except Exception as e:
+            user_info = f"Error al buscar información de vuelo: {e}"
+    else:
+        user_info = (
+            "No se ha identificado el vuelo. Por favor proporcione su ID de vuelo."
+        )
+    return {"user_info": user_info}
+
 def create_entry_node(assistant_name: str, new_dialog_state: str) -> callable:
+    """Crea un nodo de entrada para un asistente especialista."""
+
     def entry_node(state: State) -> dict:
-        tool_call_id = state["messages"][-1].tool_calls[0]["id"]
+        last_message = state["messages"][-1]
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            tool_call_id = last_message.tool_calls[0]["id"]
+        else:
+            tool_call_id = "unknown"
         return {
             "messages": [
                 ToolMessage(
@@ -190,7 +320,12 @@ def create_entry_node(assistant_name: str, new_dialog_state: str) -> callable:
 
 
 def leave_skill_node(state: State) -> dict:
-    tool_call_id = state["messages"][-1].tool_calls[0]["id"]
+    """Nodo para salir de un asistente especialista y volver al principal."""
+    last_message = state["messages"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        tool_call_id = last_message.tool_calls[0]["id"]
+    else:
+        tool_call_id = "unknown"
     return {
         "dialog_state": "pop",
         "messages": [
@@ -202,6 +337,7 @@ def leave_skill_node(state: State) -> dict:
 
 
 def route_primary_assistant(state: State):
+    """Enrutador para el asistente principal."""
     route = tools_condition(state)
     if route == END:
         return END
@@ -218,6 +354,8 @@ def route_primary_assistant(state: State):
 
 
 def create_skill_router(safe_tools: list) -> callable:
+    """Crea un enrutador para un asistente especialista."""
+
     def router(state: State):
         route = tools_condition(state)
         if route == END:
@@ -234,6 +372,7 @@ def create_skill_router(safe_tools: list) -> callable:
 
 
 def route_to_workflow(state: State):
+    """Enrutador principal que dirige al asistente adecuado según el estado del diálogo."""
     return (
         state.get("dialog_state", [])[-1]
         if state.get("dialog_state")
@@ -243,10 +382,7 @@ def route_to_workflow(state: State):
 
 builder = StateGraph(State)
 
-builder.add_node(
-    "fetch_user_info",
-    lambda state: {"user_info": fetch_user_flight_information.invoke({})},
-)
+builder.add_node("fetch_user_info", fetch_user_info_node)
 builder.add_node("primary_assistant", primary_assistant_node)
 builder.add_node("primary_tools_node", ToolNode(primary_assistant_tools))
 builder.add_node("leave_skill", leave_skill_node)
@@ -280,21 +416,28 @@ builder.add_node("excursion_assistant", excursion_assistant_node)
 builder.add_node("excursion_safe_tools", ToolNode(excursion_safe_tools))
 builder.add_node("excursion_sensitive_tools", ToolNode(excursion_sensitive_tools))
 
+
 builder.add_edge(START, "fetch_user_info")
 builder.add_conditional_edges("fetch_user_info", route_to_workflow)
 builder.add_conditional_edges("primary_assistant", route_primary_assistant)
 builder.add_edge("primary_tools_node", "primary_assistant")
 builder.add_edge("leave_skill", "primary_assistant")
 
-for skill in ["flight", "hotel", "car_rental", "excursion"]:
+skills_config = [
+    ("flight", create_skill_router(flight_safe_tools)),
+    ("hotel", create_skill_router(hotel_safe_tools)),
+    ("car_rental", create_skill_router(car_rental_safe_tools)),
+    ("excursion", create_skill_router(excursion_safe_tools)),
+]
+
+for skill, router in skills_config:
     builder.add_edge(f"enter_{skill}_assistant", f"{skill}_assistant")
     builder.add_edge(f"{skill}_safe_tools", f"{skill}_assistant")
     builder.add_edge(f"{skill}_sensitive_tools", f"{skill}_assistant")
 
-    safe_tools_list = globals()[f"{skill}_safe_tools"]
     builder.add_conditional_edges(
         f"{skill}_assistant",
-        create_skill_router(safe_tools_list),
+        router,
         {
             "leave_skill": "leave_skill",
             "safe_tools": f"{skill}_safe_tools",
