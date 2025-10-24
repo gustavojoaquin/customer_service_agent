@@ -421,7 +421,7 @@ def lookup_policy(query: str) -> str:
 
 tavily_tool = TavilySearch(max_results=3)
 
-primary_assistant_tools = [tavily_tool, fetch_user_flight_information, lookup_policy]
+primary_assistant_tools = [ fetch_user_flight_information, lookup_policy]
 
 flight_safe_tools = [search_flights, lookup_policy]
 flight_sensitive_tools = [
