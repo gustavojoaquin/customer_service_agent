@@ -186,11 +186,17 @@ def register_new_flight(
     config: Optional[RunnableConfig] = None,
 ) -> str:
     """Registra un nuevo vuelo y crea un billete para el pasajero."""
+    # Try to get passenger_id from config, but if not available, generate one from passenger info
     passenger_id = (
         config.get("configurable", {}).get("passenger_id") if config else None
     )
+
+    # If no passenger_id is provided, generate one based on passenger name and email
     if not passenger_id:
-        raise ValueError("No se ha configurado un ID de pasajero.")
+        import hashlib
+        # Create a unique passenger_id from name and email
+        passenger_info = f"{passenger_name}{passenger_email}"
+        passenger_id = hashlib.md5(passenger_info.encode()).hexdigest()[:12].upper()
 
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
@@ -232,7 +238,7 @@ def register_new_flight(
 
         conn.commit()
 
-        return f"¡Vuelo registrado con éxito!\n\nDetalles:\n- Vuelo: {flight_no}\n- Ruta: {departure_airport} → {arrival_airport}\n- Salida: {scheduled_departure}\n- Llegada: {scheduled_arrival}\n- Pasajero: {passenger_name}\n- Email: {passenger_email}\n- Clase: {fare_conditions}\n- Asiento: {seat_no}\n- Número de billete: {ticket_no}\n- Referencia de reserva: {book_ref}"
+        return f"¡Vuelo registrado con éxito!\n\nDetalles:\n- Vuelo: {flight_no}\n- Ruta: {departure_airport} → {arrival_airport}\n- Salida: {scheduled_departure}\n- Llegada: {scheduled_arrival}\n- Pasajero: {passenger_name}\n- Email: {passenger_email}\n- Clase: {fare_conditions}\n- Asiento: {seat_no}\n- Número de billete: {ticket_no}\n- Referencia de reserva: {book_ref}\n- ID de pasajero: {passenger_id}"
 
     except Exception as e:
         conn.rollback()
