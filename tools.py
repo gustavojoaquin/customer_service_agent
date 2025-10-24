@@ -1,13 +1,14 @@
+import os
 import sqlite3
 from datetime import date, datetime
 from typing import Optional, Union
 
 import pytz
-from langchain_tavily import TavilySearch
+from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-import os
-from dotenv import load_dotenv
+from langchain_tavily import TavilySearch
+
 load_dotenv()
 db = "travel2.sqlite"
 
@@ -78,51 +79,167 @@ def search_flights(
 def update_ticket_to_new_flight(
     ticket_no: str, new_flight_id: int, config: RunnableConfig
 ) -> str:
-    """Actualiza el billete del usuario a un nuevo vuelo válido."""
+    """Actualiza el billete de un pasajero a un nuevo vuelo."""
     passenger_id = config.get("configurable", {}).get("passenger_id")
     if not passenger_id:
         raise ValueError("No se ha configurado un ID de pasajero.")
 
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
+
+    cursor.execute("SELECT passenger_id FROM tickets WHERE ticket_no = ?", (ticket_no,))
+    ticket_owner = cursor.fetchone()
+
+    if not ticket_owner:
+        cursor.close()
+        conn.close()
+        return f"No se encontró el billete con el número {ticket_no}."
+
+    if ticket_owner[0] != passenger_id:
+        cursor.close()
+        conn.close()
+        return f"El pasajero actual no es el propietario del billete {ticket_no}."
 
     cursor.execute(
         "SELECT flight_id FROM ticket_flights WHERE ticket_no = ?", (ticket_no,)
     )
     current_flight = cursor.fetchone()
     if not current_flight:
-        return "No se encontró un billete existente con ese número."
+        cursor.close()
+        conn.close()
+        return f"El billete {ticket_no} no tiene un vuelo asignado actualmente."
 
-    cursor.execute(
-        "UPDATE ticket_flights SET flight_id = ? WHERE ticket_no = ?",
-        (new_flight_id, ticket_no),
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return "¡Billete actualizado al nuevo vuelo con éxito!"
+    try:
+        cursor.execute(
+            "UPDATE ticket_flights SET flight_id = ? WHERE ticket_no = ?",
+            (new_flight_id, ticket_no),
+        )
+        conn.commit()
+        msg = "¡Billete actualizado al nuevo vuelo con éxito!"
+    except sqlite3.Error as e:
+        conn.rollback()
+        msg = f"Error al actualizar el billete: {e}"
+    finally:
+        cursor.close()
+        conn.close()
+
+    return msg
 
 
 @tool
 def cancel_ticket(ticket_no: str, config: RunnableConfig) -> str:
-    """Cancela el billete del usuario y lo elimina de la base de datos."""
+    """
+    Cancela una reserva de vuelo completa asociada a un número de billete.
+    Esta acción elimina el billete, el asiento asignado y la asociación con el vuelo. Es irreversible.
+    Utiliza esta herramienta para cualquier solicitud de cancelación de un pasajero.
+    """
     passenger_id = config.get("configurable", {}).get("passenger_id")
     if not passenger_id:
         raise ValueError("No se ha configurado un ID de pasajero.")
 
     conn = sqlite3.connect(db)
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT flight_id FROM ticket_flights WHERE ticket_no = ?", (ticket_no,)
-    )
-    if not cursor.fetchone():
-        return "No se encontró un billete con ese número."
 
-    cursor.execute("DELETE FROM ticket_flights WHERE ticket_no = ?", (ticket_no,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return "¡Billete cancelado con éxito!"
+    cursor.execute("SELECT passenger_id FROM tickets WHERE ticket_no = ?", (ticket_no,))
+    ticket_row = cursor.fetchone()
+    if not ticket_row:
+        cursor.close()
+        conn.close()
+        return f"No se encontró el billete con el número {ticket_no}."
+
+    if ticket_row[0] != passenger_id:
+        cursor.close()
+        conn.close()
+        return f"El pasajero actual no es el propietario del billete {ticket_no}."
+
+    try:
+        cursor.execute("DELETE FROM boarding_passes WHERE ticket_no = ?", (ticket_no,))
+        cursor.execute("DELETE FROM ticket_flights WHERE ticket_no = ?", (ticket_no,))
+        cursor.execute("DELETE FROM tickets WHERE ticket_no = ?", (ticket_no,))
+        conn.commit()
+
+        if cursor.rowcount > 0:
+            msg = "¡Billete cancelado con éxito!"
+        else:
+            msg = f"No se pudo eliminar el billete {ticket_no} (posiblemente ya eliminado)."
+
+    except sqlite3.Error as e:
+        conn.rollback()
+        msg = f"Error al cancelar el billete: {e}"
+    finally:
+        cursor.close()
+        conn.close()
+
+    return msg
+
+
+@tool
+def register_new_flight(
+    flight_no: str,
+    departure_airport: str,
+    arrival_airport: str,
+    scheduled_departure: str,
+    scheduled_arrival: str,
+    passenger_name: str,
+    passenger_email: str,
+    fare_conditions: str = "Economy",
+    config: Optional[RunnableConfig] = None,
+) -> str:
+    """Registra un nuevo vuelo y crea un billete para el pasajero."""
+    passenger_id = (
+        config.get("configurable", {}).get("passenger_id") if config else None
+    )
+    if not passenger_id:
+        raise ValueError("No se ha configurado un ID de pasajero.")
+
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+
+    try:
+        import uuid
+
+        flight_id = str(uuid.uuid4())
+        ticket_no = str(uuid.uuid4())
+        book_ref = str(uuid.uuid4())[:6].upper()
+
+        cursor.execute(
+            "INSERT INTO flights (flight_id, flight_no, departure_airport, arrival_airport, scheduled_departure, scheduled_arrival) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                flight_id,
+                flight_no,
+                departure_airport,
+                arrival_airport,
+                scheduled_departure,
+                scheduled_arrival,
+            ),
+        )
+
+        cursor.execute(
+            "INSERT INTO tickets (ticket_no, book_ref, passenger_id) VALUES (?, ?, ?)",
+            (ticket_no, book_ref, passenger_id),
+        )
+
+        cursor.execute(
+            "INSERT INTO ticket_flights (ticket_no, flight_id, fare_conditions) VALUES (?, ?, ?)",
+            (ticket_no, flight_id, fare_conditions),
+        )
+
+        seat_no = f"{ord(passenger_name[0]) % 26 + 1}{chr(ord('A') + (len(passenger_name) % 6))}"
+        cursor.execute(
+            "INSERT INTO boarding_passes (ticket_no, flight_id, seat_no) VALUES (?, ?, ?)",
+            (ticket_no, flight_id, seat_no),
+        )
+
+        conn.commit()
+
+        return f"¡Vuelo registrado con éxito!\n\nDetalles:\n- Vuelo: {flight_no}\n- Ruta: {departure_airport} → {arrival_airport}\n- Salida: {scheduled_departure}\n- Llegada: {scheduled_arrival}\n- Pasajero: {passenger_name}\n- Email: {passenger_email}\n- Clase: {fare_conditions}\n- Asiento: {seat_no}\n- Número de billete: {ticket_no}\n- Referencia de reserva: {book_ref}"
+
+    except Exception as e:
+        conn.rollback()
+        return f"Error al registrar el vuelo: {str(e)}"
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @tool
@@ -307,7 +424,11 @@ tavily_tool = TavilySearch(max_results=3)
 primary_assistant_tools = [tavily_tool, fetch_user_flight_information, lookup_policy]
 
 flight_safe_tools = [search_flights, lookup_policy]
-flight_sensitive_tools = [update_ticket_to_new_flight, cancel_ticket]
+flight_sensitive_tools = [
+    update_ticket_to_new_flight,
+    cancel_ticket,
+    register_new_flight,
+]
 
 car_rental_safe_tools = [search_car_rentals, lookup_policy]
 car_rental_sensitive_tools = [book_car_rental, cancel_car_rental]

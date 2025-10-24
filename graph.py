@@ -1,11 +1,11 @@
-# graph.py
+import json
 import os
 from datetime import datetime
 from typing import Annotated, Literal
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -25,7 +25,7 @@ def update_dialog_stack(left: list[str], right: str | None) -> list[str]:
 
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], lambda x, y: x + y]
-    user_info: str
+    user_info: list
     dialog_state: Annotated[
         list[
             Literal[
@@ -41,36 +41,26 @@ class State(TypedDict):
 
 
 class CompleteOrEscalate(BaseModel):
-    """Marca la tarea actual como completada o escala el control al asistente principal."""
-
     reason: str
 
 
 class ToFlightBookingAssistant(BaseModel):
-    """Transfiere el trabajo a un asistente especializado en vuelos."""
-
     request: str = Field(
         description="Preguntas de seguimiento para aclarar la solicitud de vuelo."
     )
 
 
 class ToHotelBookingAssistant(BaseModel):
-    """Transfiere el trabajo a un asistente especializado en hoteles."""
-
     request: str = Field(description="Solicitud del usuario sobre la reserva de hotel.")
 
 
 class ToCarRentalAssistant(BaseModel):
-    """Transfiere el trabajo a un asistente especializado en alquiler de coches."""
-
     request: str = Field(
         description="Solicitud del usuario sobre el alquiler de un coche."
     )
 
 
 class ToExcursionAssistant(BaseModel):
-    """Transfiere el trabajo a un asistente especializado en excursiones."""
-
     request: str = Field(
         description="Solicitud del usuario sobre recomendaciones de viaje o excursiones."
     )
@@ -92,6 +82,7 @@ primary_assistant_prompt = ChatPromptTemplate.from_messages(
         ("placeholder", "{messages}"),
     ]
 ).partial(time=datetime.now)
+
 assistant_runnable = primary_assistant_prompt | llm.bind_tools(
     primary_assistant_tools
     + [
@@ -101,11 +92,12 @@ assistant_runnable = primary_assistant_prompt | llm.bind_tools(
         ToExcursionAssistant,
     ]
 )
+
 flight_booking_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres un asistente especializado en gestionar actualizaciones de vuelos. Confirma los detalles con el cliente. Si la tarea se completa, usa la herramienta CompleteOrEscalate.",
+            "Eres un asistente experto en la gestión de reservas de vuelos. Tus tareas incluyen buscar vuelos, actualizar billetes existentes y registrar nuevos vuelos. Para registrar un nuevo vuelo, DEBES obtener primero del usuario la siguiente información: su nombre completo y su dirección de correo electrónico. Una vez que tengas toda la información, utiliza las herramientas disponibles para completar la tarea. Si la tarea se completa, usa la herramienta CompleteOrEscalate.",
         ),
         ("placeholder", "{messages}"),
     ]
@@ -154,24 +146,57 @@ excursion_runnable = excursion_prompt | llm.bind_tools(
 )
 
 
+def _process_messages_for_llm(state: State) -> list[AnyMessage]:
+    processed_messages = []
+    for msg in state["messages"]:
+        if isinstance(msg, ToolMessage) and not isinstance(msg.content, str):
+            try:
+                content_str = json.dumps(msg.content)
+                processed_messages.append(
+                    ToolMessage(content=content_str, tool_call_id=msg.tool_call_id)
+                )
+            except TypeError:
+                processed_messages.append(
+                    ToolMessage(content=str(msg.content), tool_call_id=msg.tool_call_id)
+                )
+        else:
+            processed_messages.append(msg)
+    return processed_messages
+
+
 def primary_assistant_node(state: State):
-    return {"messages": [assistant_runnable.invoke(state)]}
+    temp_state = state.copy()
+    temp_state["messages"] = _process_messages_for_llm(state)
+    result = assistant_runnable.invoke(temp_state)
+    return {"messages": [result]}
 
 
 def flight_assistant_node(state: State):
-    return {"messages": [flight_runnable.invoke(state)]}
+    temp_state = state.copy()
+    temp_state["messages"] = _process_messages_for_llm(state)
+    result = flight_runnable.invoke(temp_state)
+    return {"messages": [result]}
 
 
 def hotel_assistant_node(state: State):
-    return {"messages": [hotel_runnable.invoke(state)]}
+    temp_state = state.copy()
+    temp_state["messages"] = _process_messages_for_llm(state)
+    result = hotel_runnable.invoke(temp_state)
+    return {"messages": [result]}
 
 
 def car_rental_assistant_node(state: State):
-    return {"messages": [car_rental_runnable.invoke(state)]}
+    temp_state = state.copy()
+    temp_state["messages"] = _process_messages_for_llm(state)
+    result = car_rental_runnable.invoke(temp_state)
+    return {"messages": [result]}
 
 
 def excursion_assistant_node(state: State):
-    return {"messages": [excursion_runnable.invoke(state)]}
+    temp_state = state.copy()
+    temp_state["messages"] = _process_messages_for_llm(state)
+    result = excursion_runnable.invoke(temp_state)
+    return {"messages": [result]}
 
 
 def create_entry_node(assistant_name: str, new_dialog_state: str) -> callable:
