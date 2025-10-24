@@ -351,6 +351,7 @@ for skill in ["flight", "hotel", "car_rental", "excursion"]:
     )
 
 memory = MemorySaver()
+
 graph = builder.compile(
     checkpointer=memory,
     interrupt_before=[
@@ -360,3 +361,13 @@ graph = builder.compile(
         "excursion_sensitive_tools",
     ],
 )
+"""
+graph = builder.compile(
+    interrupt_before=[
+        "flight_sensitive_tools",
+        "hotel_sensitive_tools",
+        "car_rental_sensitive_tools",
+        "excursion_sensitive_tools",
+    ],
+)
+"""

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.langchain.com/langgraph.schema.json",
+  "name": "customer_service_agent",
+  "version": "0.1.0",
+  "env": ".env",
+  "graphs": {
+    "agent": "./graph.py:graph"
+  },
+  "dependencies": ["."]
+}

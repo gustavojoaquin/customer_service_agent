@@ -268,6 +268,28 @@ def search_car_rentals(
         dict(zip([column[0] for column in cursor.description], row)) for row in results
     ]
 
+#Coches disponibles
+@tool
+def buscar_carros_rentados() -> list[dict]:
+    """
+    Busca todos los carros que están actualmente rentados/reservados (booked = 1).
+    
+    Returns:
+        Lista de todos los carros rentados con todos sus campos
+    """
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    
+    # Solo carros rentados
+    query = "SELECT * FROM car_rentals WHERE booked = 1"
+    
+    cursor.execute(query)
+    results = cursor.fetchall()
+    conn.close()
+    
+    return [
+        dict(zip([column[0] for column in cursor.description], row)) for row in results
+    ]
 
 @tool
 def book_car_rental(rental_id: int) -> str:
@@ -430,7 +452,7 @@ flight_sensitive_tools = [
     register_new_flight,
 ]
 
-car_rental_safe_tools = [search_car_rentals, lookup_policy]
+car_rental_safe_tools = [search_car_rentals,buscar_carros_rentados, lookup_policy]
 car_rental_sensitive_tools = [book_car_rental, cancel_car_rental]
 
 hotel_safe_tools = [search_hotels, lookup_policy]
