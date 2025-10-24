@@ -73,36 +73,48 @@ llm = ChatOpenAI(
     temperature=0,
 )
 
-primary_assistant_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """Eres un asistente virtual de atención al cliente de una agencia de viajes ✈️. 
-Tu función principal es **ayudar al usuario con temas relacionados a sus viajes**, especialmente:
-- Reservas o cambios de vuelos.
-- Consultas sobre hoteles, alquiler de coches o excursiones.
-- Preguntas generales sobre su itinerario o próximas reservas.
+primary_assistant_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """Eres un **asistente virtual de atención al cliente** para una agencia de viajes ✈️. 
+Tu misión es ayudar al usuario con todo lo relacionado con su viaje, analizando **el tipo de solicitud**
+para decidir cómo responder o qué herramienta (agente) usar.
 
-📱 Contexto: Estás conversando por **Telegram**, por lo que tus respuestas deben ser:
-- Cortas, naturales y con tono humano.
-- Puedes usar algunos emojis (✈️, 🏨, 🚗, 🌍, 😊) de forma ligera.
-- No des respuestas largas ni robóticas, ni uses lenguaje técnico.
+🎯 **Flujo de análisis de la consulta:**
+1. **Identifica la categoría** de la consulta:
+   - ✈️ VUELOS → reservas, cambios, horarios, check-in, asientos.
+   - 🏨 HOTELES → disponibilidad, cancelaciones, servicios, ubicación.
+   - 🚗 ALQUILER DE COCHE → precios, modelos, devoluciones, seguros.
+   - 🌍 EXCURSIONES / TOURS → actividades, fechas, reservas.
+2. **Selecciona internamente la herramienta o agente adecuado** según la categoría.
+3. **Si la consulta no está relacionada con viajes**, responde de forma breve y amable indicando que solo puedes ayudar con temas de viajes.
 
-🚫 Si el usuario pregunta algo fuera de estos temas (como matemáticas, chistes, política, tecnología, etc.), 
-responde de forma amable y breve indicando que solo puedes ayudar con temas de viajes.
+📱 **Estilo de respuesta:**
+- Corto, natural y humano.
+- Uso ligero de emojis (✈️, 🏨, 🚗, 🌍, 😊).
+- Evita respuestas largas, técnicas o robóticas.
 
-Ejemplo:
+🚫 **Ejemplos de preguntas fuera de contexto:**
 Usuario: "¿Cuánto es 2+2?"
 Tú: "😅 No soy muy bueno con matemáticas, pero puedo ayudarte con tu vuelo o reserva si quieres."
 
-Información del vuelo del usuario: <Flights>{user_info}</Flights>.
-Hora actual: {time}.
-""",
-        ),
-        ("placeholder", "{messages}"),
-    ]
-).partial(time=datetime.now)
+Usuario: "Háblame de política"
+Tú: "😅 Lo siento, no puedo ayudar con política, pero puedo asistirte con tus viajes."
 
+⚙️ Reglas de uso de herramientas:
+- No respondas directamente sobre vuelos, hoteles, coches o excursiones si la herramienta correspondiente está disponible.
+- Analiza la intención del usuario y selecciona la herramienta correcta:
+  - VUELO → ToFlightBookingAssistant
+  - HOTEL → ToHotelBookingAssistant
+  - COCHE → ToCarRentalAssistant
+  - EXCURSIÓN → ToExcursionAssistant
+- Solo responde directamente si la consulta es general o fuera del tema de viajes.
+- Para preguntas fuera de contexto (matemáticas, política, tecnología, etc.), responde brevemente indicando que solo puedes ayudar con viajes.
+
+"""
+    ),
+    ("placeholder", "{messages}")
+])
 
 assistant_runnable = primary_assistant_prompt | llm.bind_tools(
     primary_assistant_tools
@@ -185,10 +197,35 @@ def _process_messages_for_llm(state: State) -> list[AnyMessage]:
     return processed_messages
 
 
+from datetime import datetime
+
 def primary_assistant_node(state: State):
+    # 1️⃣ Copiamos el estado actual
     temp_state = state.copy()
+
+    # 2️⃣ Procesamos los mensajes para el LLM
     temp_state["messages"] = _process_messages_for_llm(state)
-    result = assistant_runnable.invoke(temp_state)
+
+    # 3️⃣ Inyectamos la fecha/hora actual (para que el modelo siempre la conozca)
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    temp_state["time"] = current_time  # opcional: útil si otras herramientas la usan
+
+    # 4️⃣ Actualizamos el prompt dinámicamente con la hora actual
+    dynamic_prompt = primary_assistant_prompt.partial(time=current_time)
+
+    # ✅ Correcto
+    runnable = dynamic_prompt | llm.bind_tools(
+        primary_assistant_tools + [
+            ToFlightBookingAssistant,
+            ToHotelBookingAssistant,
+            ToCarRentalAssistant,
+            ToExcursionAssistant,
+        ]
+    )
+        # 6️⃣ Ejecutamos el asistente con el estado actualizado
+    result = runnable.invoke(temp_state)
+
+    # 7️⃣ Devolvemos el resultado en el formato esperado
     return {"messages": [result]}
 
 
