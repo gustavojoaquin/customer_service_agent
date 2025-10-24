@@ -1,6 +1,7 @@
 import os
 import uuid
 import re
+from elevenlabs import ElevenLabs
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -15,6 +16,14 @@ from telegram.ext import (
 from setup_db import setup_database
 
 from graph import graph
+
+
+from types import SimpleNamespace
+
+from io import BytesIO
+from types import SimpleNamespace
+from telegram import Update
+from telegram.ext import ContextTypes
 
 
 def clean_telegram_message(text: str) -> str:
@@ -42,8 +51,13 @@ def clean_telegram_message(text: str) -> str:
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN no está configurado en el archivo .env")
+if not ELEVEN_API_KEY:
+    raise ValueError("ELEVENLABS_API_KEY no está configurado en el archivo .env")
+
+client = ElevenLabs(api_key=ELEVEN_API_KEY)
 
 
 def generate_diagram():
@@ -131,6 +145,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Acción procesada. ¿Necesitas algo más?")
 
 
+
+# ---------- Procesar audios (voz) ----------
+async def procesar_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        voice_file = await update.message.voice.get_file()
+        audio_bytes = await voice_file.download_as_bytearray()
+        audio_stream = BytesIO(audio_bytes)
+
+
+        # Transcripción directa desde memoria
+        result = client.speech_to_text.convert(
+            model_id="scribe_v1",
+            file=("audio.ogg", audio_stream)
+        )
+
+        text = result.text.strip()
+
+        # Crear un objeto tipo Update simulado con todos los campos requeridos
+        fake_message = SimpleNamespace(
+            text=text,
+            chat=update.message.chat,
+            from_user=update.message.from_user,
+            reply_text=update.message.reply_text,
+        )
+
+        fake_update = SimpleNamespace(
+            message=fake_message,
+            effective_chat=update.effective_chat,
+            effective_user=update.effective_user,
+        )
+
+        # Llamar al mismo manejador de texto
+        await handle_message(fake_update, context)
+
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Disculpa estoy teniendo problemas para procesar el audio , podrias intentarlo de nuevo mas tarde.O si gustas enviarme un mensaje de texto")
+
+
+
 def main():
     """Inicia el bot de Telegram."""
     print("Configurando la base de datos...")
@@ -140,6 +193,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, procesar_audio))
 
     print("Bot en marcha... esperando mensajes.")
     app.run_polling()
