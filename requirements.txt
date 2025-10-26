@@ -9,3 +9,4 @@ python-dotenv
 python-telegram-bot
 requests
 pytz
+elevenlabs
