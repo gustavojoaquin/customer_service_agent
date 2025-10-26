@@ -29,7 +29,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 
-def start_simple_server(host='127.0.0.1', port=65432):
+def start_simple_server(host='127.0.0.1', port=10000):
     """Start a simple TCP server that listens for connections and sends a greeting."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.bind((host, port))
