@@ -3,6 +3,7 @@ import uuid
 import re
 import socket
 import asyncio
+import threading
 from elevenlabs import ElevenLabs
 
 from dotenv import load_dotenv
@@ -28,32 +29,18 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 
-async def start_simple_server(host='127.0.0.1', port=65432):
+def start_simple_server(host='127.0.0.1', port=65432):
     """Start a simple TCP server that listens for connections and sends a greeting."""
-    server = await asyncio.start_server(
-        handle_client, host, port
-    )
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((host, port))
+        server_socket.listen()
+        print(f"Server listening on {host}:{port}")
 
-    addr = server.sockets[0].getsockname()
-    print(f'Server listening on {addr}')
-
-    async with server:
-        await server.serve_forever()
-
-
-async def handle_client(reader, writer):
-    """Handle incoming client connections."""
-    addr = writer.get_extra_info('peername')
-    print(f'Connected by {addr}')
-
-    # Send greeting message
-    writer.write(b'Hello from Customer Service Agent Bot\n')
-    await writer.drain()
-
-    # Close the connection
-    writer.close()
-    await writer.wait_closed()
-    print(f'Connection closed with {addr}')
+        while True:
+            conn, addr = server_socket.accept()
+            with conn:
+                print(f"Connected by {addr}")
+                conn.sendall(b'Hello from Customer Service Agent Bot\n')
 
 
 def clean_telegram_message(text: str) -> str:
@@ -213,27 +200,25 @@ async def procesar_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Disculpa estoy teniendo problemas para procesar el audio , podrias intentarlo de nuevo mas tarde.O si gustas enviarme un mensaje de texto")
 
 
-
-async def main_async():
-    """Inicia el bot de Telegram y el servidor TCP de forma asíncrona."""
+def main():
+    """Inicia el bot de Telegram."""
     print("Configurando la base de datos...")
     setup_database()
 
     print("Iniciando bot y servidor TCP...")
 
+    # Start the TCP server in a separate thread
+    server_thread = threading.Thread(target=start_simple_server, daemon=True)
+    server_thread.start()
+
+    print("Iniciando bot...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, procesar_audio))
 
-    await asyncio.gather(
-        app.run_polling(),
-        start_simple_server()
-    )
-
-def main():
-    """Inicia el bot de Telegram."""
-    asyncio.run(main_async())
+    print("Bot en marcha... esperando mensajes.")
+    app.run_polling()
 
 
 if __name__ == "__main__":
