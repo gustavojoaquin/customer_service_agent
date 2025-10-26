@@ -10,3 +10,4 @@ python-telegram-bot
 requests
 pytz
 elevenlabs
+langchain_tavily
