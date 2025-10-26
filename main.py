@@ -1,6 +1,8 @@
 import os
 import uuid
 import re
+import socket
+import asyncio
 from elevenlabs import ElevenLabs
 
 from dotenv import load_dotenv
@@ -24,6 +26,34 @@ from io import BytesIO
 from types import SimpleNamespace
 from telegram import Update
 from telegram.ext import ContextTypes
+
+
+async def start_simple_server(host='127.0.0.1', port=65432):
+    """Start a simple TCP server that listens for connections and sends a greeting."""
+    server = await asyncio.start_server(
+        handle_client, host, port
+    )
+
+    addr = server.sockets[0].getsockname()
+    print(f'Server listening on {addr}')
+
+    async with server:
+        await server.serve_forever()
+
+
+async def handle_client(reader, writer):
+    """Handle incoming client connections."""
+    addr = writer.get_extra_info('peername')
+    print(f'Connected by {addr}')
+
+    # Send greeting message
+    writer.write(b'Hello from Customer Service Agent Bot\n')
+    await writer.drain()
+
+    # Close the connection
+    writer.close()
+    await writer.wait_closed()
+    print(f'Connection closed with {addr}')
 
 
 def clean_telegram_message(text: str) -> str:
@@ -184,19 +214,26 @@ async def procesar_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-def main():
-    """Inicia el bot de Telegram."""
+async def main_async():
+    """Inicia el bot de Telegram y el servidor TCP de forma asíncrona."""
     print("Configurando la base de datos...")
     setup_database()
 
-    print("Iniciando bot...")
+    print("Iniciando bot y servidor TCP...")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, procesar_audio))
 
-    print("Bot en marcha... esperando mensajes.")
-    app.run_polling()
+    await asyncio.gather(
+        app.run_polling(),
+        start_simple_server()
+    )
+
+def main():
+    """Inicia el bot de Telegram."""
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
