@@ -1,6 +1,9 @@
 import os
 import uuid
 import re
+import socket
+import asyncio
+import threading
 from elevenlabs import ElevenLabs
 
 from dotenv import load_dotenv
@@ -24,6 +27,20 @@ from io import BytesIO
 from types import SimpleNamespace
 from telegram import Update
 from telegram.ext import ContextTypes
+
+
+def start_simple_server(host='127.0.0.1', port=10000):
+    """Start a simple TCP server that listens for connections and sends a greeting."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((host, port))
+        server_socket.listen()
+        print(f"Server listening on {host}:{port}")
+
+        while True:
+            conn, addr = server_socket.accept()
+            with conn:
+                print(f"Connected by {addr}")
+                conn.sendall(b'Hello from Customer Service Agent Bot\n')
 
 
 def clean_telegram_message(text: str) -> str:
@@ -183,11 +200,16 @@ async def procesar_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Disculpa estoy teniendo problemas para procesar el audio , podrias intentarlo de nuevo mas tarde.O si gustas enviarme un mensaje de texto")
 
 
-
 def main():
     """Inicia el bot de Telegram."""
     print("Configurando la base de datos...")
     setup_database()
+
+    print("Iniciando bot y servidor TCP...")
+
+    # Start the TCP server in a separate thread
+    server_thread = threading.Thread(target=start_simple_server, daemon=True)
+    server_thread.start()
 
     print("Iniciando bot...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()

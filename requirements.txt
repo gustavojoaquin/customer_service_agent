@@ -9,4 +9,5 @@ python-dotenv
 python-telegram-bot
 requests
 pytz
-pygraphviz
+elevenlabs
+langchain_tavily
