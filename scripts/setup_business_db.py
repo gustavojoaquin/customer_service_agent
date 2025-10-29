@@ -1,6 +1,6 @@
 """
 Crea todas las tablas de negocio: flights, hotels, cars, excursions
-Ejecutar UNA SOLA VEZ al iniciar el proyecto
+Ejecutar UNA SOLA VEZ al iniciar el proyecto.
 """
 from datetime import datetime, timedelta
 from psycopg2.extras import execute_batch
