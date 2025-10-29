@@ -1,13 +1,15 @@
-langchain-core>=0.2.1
-langgraph
-langchain-community
-langchain
-langchain-openai
-tavily-python
-pandas
+# Core
 python-dotenv
+psycopg  # ← Para PostgresSaver (versión 3)
+psycopg2-binary  # ← Para tu config/database.py
 python-telegram-bot
-requests
-pytz
-elevenlabs
-langchain_tavily
+
+# LangChain y LangGraph
+langchain
+langchain-core
+langchain-anthropic  # o langchain-openai según tu LLM
+langgraph
+langgraph-checkpoint-postgres  # ← IMPORTANTE: para memoria persistente
+
+# Tools adicionales
+langchain-community  # si usas TavilySearch u otras tools
