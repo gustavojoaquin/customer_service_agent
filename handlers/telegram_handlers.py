@@ -10,7 +10,13 @@ from elevenlabs import ElevenLabs
 
 from config.settings import ELEVEN_API_KEY
 from graph.travel_graph import graph
-from .utils import clean_telegram_message, get_or_create_thread_id
+from .utils import (
+    clean_telegram_message, 
+    get_or_create_thread_id, 
+    archive_conversation,
+    get_user_conversations
+)
+
 from config.database import get_db_connection
 
 # Cliente de ElevenLabs
@@ -143,26 +149,85 @@ async def procesar_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reinicia la conversación del usuario."""
+    """Reinicia la conversación del usuario (archiva la anterior)."""
     telegram_user_id = update.effective_user.id
     
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Generar nuevo thread_id
+    # 1. Obtener thread_id actual
+    cursor.execute(
+        "SELECT current_thread_id FROM users WHERE telegram_user_id = %s",
+        (telegram_user_id,)
+    )
+    result = cursor.fetchone()
+    
+    if result and result[0]:
+        old_thread_id = result[0]
+        
+        # 2. Archivar conversación anterior
+        archive_conversation(telegram_user_id, old_thread_id)
+        
+        await update.message.reply_text(
+            f"📦 Conversación anterior archivada: {old_thread_id[:8]}..."
+        )
+    
+    # 3. Generar nuevo thread_id
     new_thread_id = str(uuid.uuid4())
     
+    # 4. Crear nueva conversación
     cursor.execute(
-        "UPDATE users SET thread_id = %s WHERE telegram_user_id = %s",
+        "INSERT INTO conversations (telegram_user_id, thread_id) VALUES (%s, %s)",
+        (telegram_user_id, new_thread_id)
+    )
+    
+    # 5. Actualizar current_thread_id del usuario
+    cursor.execute(
+        "UPDATE users SET current_thread_id = %s WHERE telegram_user_id = %s",
         (new_thread_id, telegram_user_id)
     )
+    
     conn.commit()
     conn.close()
     
+    # Actualizar context
+    context.user_data["thread_id"] = new_thread_id
+    
     await update.message.reply_text(
-        "🔄 Conversación reiniciada.\n"
-        f"Nuevo ID: {new_thread_id}"
+        f"🔄 Nueva conversación iniciada\n"
+        f"ID: {new_thread_id}"
     )
+
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra el historial de conversaciones del usuario."""
+    telegram_user_id = update.effective_user.id
+    
+    conversations = get_user_conversations(telegram_user_id, limit=10)
+    
+    if not conversations:
+        await update.message.reply_text("No tienes conversaciones previas.")
+        return
+    
+    # Formatear respuesta
+    message = "📜 **Historial de Conversaciones**\n\n"
+    
+    for i, conv in enumerate(conversations, 1):
+        status = "🟢 Activa" if conv["is_active"] else "⚪ Archivada"
+        thread_short = conv["thread_id"][:8]
+        started = conv["started_at"].strftime("%d/%m/%Y %H:%M")
+        
+        message += f"{i}. {status}\n"
+        message += f"   ID: {thread_short}...\n"
+        message += f"   Inicio: {started}\n"
+        
+        if conv["ended_at"]:
+            ended = conv["ended_at"].strftime("%d/%m/%Y %H:%M")
+            message += f"   Fin: {ended}\n"
+        
+        message += "\n"
+    
+    await update.message.reply_text(clean_telegram_message(message))
 
 """""""""
 

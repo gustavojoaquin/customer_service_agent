@@ -11,14 +11,39 @@ def setup_business_tables():
     cursor = conn.cursor()
 
     # --- Crear tablas ---
+    # Tabla de usuarios
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        telegram_user_id BIGINT PRIMARY KEY,
-        thread_id TEXT NOT NULL,
-        passenger_id TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_user_id BIGINT PRIMARY KEY,
+            passenger_id TEXT NOT NULL,
+            current_thread_id TEXT,  -- Conversación actual activa
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Tabla de historial de conversaciones
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id SERIAL PRIMARY KEY,
+            telegram_user_id BIGINT NOT NULL,
+            thread_id TEXT NOT NULL UNIQUE,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            is_active BOOLEAN DEFAULT TRUE,
+            FOREIGN KEY (telegram_user_id) REFERENCES users(telegram_user_id)
+        )
+    """)
+
+    # Índices para búsquedas rápidas
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_conversations_user 
+        ON conversations(telegram_user_id)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_conversations_active 
+        ON conversations(telegram_user_id, is_active)
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tickets (
